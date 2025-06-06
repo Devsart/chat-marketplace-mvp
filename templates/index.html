@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot Marketplace Eletrônicos - 39A-na</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            overscroll-behavior-y: contain; 
+        }
+        #chat-container {
+            height: calc(100vh - 40px); 
+            max-height: 700px; 
+        }
+        @media (min-width: 768px) {
+            #chat-container {
+                 height: 80vh;
+            }
+        }
+
+        #chat-messages::-webkit-scrollbar {
+            width: 8px;
+        }
+        #chat-messages::-webkit-scrollbar-thumb {
+            background-color: #4b5563;
+            border-radius: 4px;
+        }
+        #chat-messages::-webkit-scrollbar-track {
+            background-color: #1f2937;
+        }
+        .loader {
+            border: 4px solid #374151;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .markdown-content ul {
+            list-style-type: disc;
+            margin-left: 20px;
+            margin-top: 0.5em;
+            margin-bottom: 0.5em;
+        }
+        .markdown-content li {
+            margin-bottom: 0.25em;
+        }
+        .markdown-content p {
+            margin-bottom: 0.5em;
+        }
+        .markdown-content p:last-child {
+            margin-bottom: 0;
+        }
+        .markdown-content strong, .markdown-content b {
+            font-weight: 600;
+        }
+        .markdown-content em, .markdown-content i {
+            font-style: italic;
+        }
+        .markdown-content a {
+            color: #60a5fa;
+            text-decoration: underline;
+        }
+        .markdown-content a:hover {
+            color: #3b82f6;
+        }
+
+    </style>
+</head>
+<body class="bg-gray-900 flex flex-col items-center justify-center min-h-screen p-2 sm:p-4">
+
+    <div id="chat-container" class="bg-gray-800 shadow-2xl rounded-lg w-full max-w-2xl flex flex-col border border-gray-700">
+        <header class="bg-gray-700 text-white p-4 rounded-t-lg flex items-center justify-between border-b border-gray-600">
+            <h1 class="text-lg sm:text-xl font-semibold text-center flex-grow">Marketplace Eletrônicos - 39A-na</h1>
+            <button id="restart-button" title="Reiniciar Conversa" class="p-2 rounded-full hover:bg-gray-600 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                </svg>
+            </button>
+        </header>
+
+        <div id="chat-messages" class="flex-1 p-4 sm:p-6 space-y-4 overflow-y-auto bg-gray-800">
+        </div>
+
+        <div id="loading-indicator-container" class="p-4 text-sm text-gray-400 items-center hidden border-t border-gray-700">
+            <div class="flex items-center">
+                <div class="loader mr-3"></div>
+                39A-na está digitando...
+            </div>
+        </div>
+
+        <footer class="p-3 sm:p-4 border-t border-gray-700 bg-gray-800 rounded-b-lg">
+            <div class="flex items-center space-x-2 sm:space-x-3">
+                <input type="text" id="message-input" class="flex-1 p-3 border border-gray-600 bg-gray-700 text-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm sm:text-base placeholder-gray-400" placeholder="Digite sua mensagem...">
+                <button id="send-button" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 sm:px-6 rounded-lg transition duration-150 ease-in-out">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 sm:w-6 sm:h-6">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+                    </svg>
+                </button>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        const chatMessagesDiv = document.getElementById('chat-messages');
+        const messageInput = document.getElementById('message-input');
+        const sendButton = document.getElementById('send-button');
+        const loadingIndicatorContainer = document.getElementById('loading-indicator-container');
+        const restartButton = document.getElementById('restart-button');
+
+        let currentChatState = 'INITIAL'; 
+
+        function addMessageToDisplay(text, sender) {
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('mb-3', 'p-3', 'rounded-xl', 'max-w-[85%]', 'sm:max-w-[80%]', 'break-words', 'shadow-md', 'text-sm', 'sm:text-base');
+            
+            const senderName = sender === 'user' ? 'Você' : '39A-na';
+            const senderNameClass = sender === 'user' ? 'font-semibold text-blue-400' : 'font-semibold text-purple-400';
+            
+            const senderNameElement = document.createElement('p');
+            senderNameElement.className = `${senderNameClass} mb-0.5`;
+            senderNameElement.textContent = senderName + ':';
+            messageElement.appendChild(senderNameElement);
+            
+            const textContentElement = document.createElement('div');
+            textContentElement.classList.add('markdown-content');
+
+            if (sender === 'user') {
+                textContentElement.textContent = text;
+                 messageElement.classList.add('bg-blue-700', 'text-gray-200', 'self-end', 'ml-auto', 'rounded-br-none');
+            } else {
+                textContentElement.innerHTML = marked.parse(text); 
+                messageElement.classList.add('bg-gray-600', 'text-gray-200', 'self-start', 'mr-auto', 'rounded-bl-none');
+            }
+            messageElement.appendChild(textContentElement);
+
+            chatMessagesDiv.appendChild(messageElement);
+            chatMessagesDiv.scrollTop = chatMessagesDiv.scrollHeight; 
+        }
+
+        function showLoading(isLoading) {
+            if (isLoading) {
+                loadingIndicatorContainer.classList.remove('hidden');
+                loadingIndicatorContainer.classList.add('flex');
+                sendButton.disabled = true;
+                messageInput.disabled = true;
+            } else {
+                loadingIndicatorContainer.classList.add('hidden');
+                loadingIndicatorContainer.classList.remove('flex');
+                sendButton.disabled = false;
+                messageInput.disabled = false;
+                if (currentChatState !== 'FINALIZED') { 
+                    messageInput.focus();
+                }
+            }
+        }
+        
+        async function handleUserSendMessage() {
+            const userInput = messageInput.value.trim();
+            if (userInput === "" || currentChatState === 'FINALIZED') return;
+
+            addMessageToDisplay(userInput, 'user');
+            messageInput.value = "";
+            showLoading(true);
+
+            try {
+                const response = await fetch('/send_message', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ user_input: userInput }),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    addMessageToDisplay(errorData.bot_response || `Erro HTTP: ${response.status}`, 'bot');
+                    console.error("Erro do backend:", errorData);
+                } else {
+                    const data = await response.json();
+                    addMessageToDisplay(data.bot_response, 'bot');
+                    currentChatState = data.chat_state;
+                }
+            } catch (error) {
+                console.error("Erro ao enviar mensagem:", error);
+                addMessageToDisplay("Erro de conexão. Tente novamente.", 'bot');
+            } finally {
+                showLoading(false);
+                if (currentChatState === 'FINALIZED') {
+                    messageInput.placeholder = "Conversa finalizada. Reinicie para continuar.";
+                    messageInput.disabled = true;
+                    sendButton.disabled = true;
+                }
+            }
+        }
+
+        async function initializeOrRestartChat() {
+            showLoading(true);
+            chatMessagesDiv.innerHTML = '';
+            messageInput.placeholder = "Digite sua mensagem...";
+            messageInput.disabled = false;
+            sendButton.disabled = false;
+            currentChatState = 'INITIAL'; 
+
+            try {
+                const response = await fetch('/initialize_chat', { method: 'POST' });
+                 if (!response.ok) {
+                    const errorData = await response.json();
+                    addMessageToDisplay(errorData.bot_response || `Erro HTTP: ${response.status} ao iniciar.`, 'bot');
+                } else {
+                    const data = await response.json();
+                    addMessageToDisplay(data.bot_response, 'bot');
+                    currentChatState = data.chat_state;
+                }
+            } catch (error) {
+                console.error("Erro ao inicializar chat:", error);
+                addMessageToDisplay("Não foi possível iniciar o chat. Verifique o backend.", 'bot');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        sendButton.addEventListener('click', handleUserSendMessage);
+        messageInput.addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
+                handleUserSendMessage();
+            }
+        });
+        restartButton.addEventListener('click', initializeOrRestartChat);
+
+        document.addEventListener('DOMContentLoaded', initializeOrRestartChat);
+    </script>
+</body>
+</html>

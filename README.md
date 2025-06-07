@@ -45,7 +45,8 @@ Na raiz do seu projeto, crie um arquivo chamado `.env` com o seguinte conteúdo:
 
 ```env
 GOOGLE_API_KEY="SUA_API_KEY_GEMINI_AQUI"
-GOOGLE_APPLICATION_CREDENTIALS="caminho/para/seu/firebase-credentials.json" # Usado mais para execução local direta
+GOOGLE_APPLICATION_CREDENTIALS="caminho/para/seu/firebase-credentials.json" 
+OPENROUTER_API_KEY="SUA_API_KEY_OPENROUTER_AQUI" <~ Para testes AB com multiplos modelos.
 ```
 
 Substitua `SUA_API_KEY_GEMINI_AQUI` pela chave de API obtida do Google AI Studio.

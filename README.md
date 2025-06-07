@@ -1,8 +1,8 @@
-# Chatbot de Atendimento ao Cliente para Vendas de Marketplace de Eletrónicos
+# Chatbot de Atendimento ao Cliente para Vendas de Marketplace de Eletrônicos
 
 ## 1. Utilidade do Projeto
 
-Este projeto implementa um **chatbot inteligente** utilizando um modelo de linguagem (LLM), especificamente a API Gemini do Google, para simular um ambiente de vendas de um marketplace fictício de eletrónicos. O objetivo principal do chatbot, chamado **IAne**, é:
+Este projeto implementa um **chatbot inteligente** utilizando um modelo de linguagem (LLM), especificamente a API Gemini do Google, para simular um ambiente de vendas de um marketplace fictício de eletrónicos. O objetivo principal do chatbot, chamado **39A-na**, é:
 
 - **Interagir com clientes:** Entender as suas necessidades e preferências de produtos eletrónicos.
 - **Apresentar produtos:** Fornecer informações sobre os produtos disponíveis no catálogo, que é carregado dinamicamente de um banco de dados Firestore.
@@ -112,10 +112,11 @@ Substitua `SUA_API_KEY_GEMINI_AQUI` pela chave de API obtida do Google AI Studio
 
 ---
 
+5. Alguns dados relacionados ao estados dos clientes e taxa de sucesso (% de compras que foram finalizadas, por modelo) podem ser visualizados no caminho /dash
+Apenas como demonstração.
+
+---
+
 **Diagrama de Arquitetura MVP**
 
- - A inserir
-
- **Diagrama de Arquitetura Escalável (Produto)**
-
- - A inserir.
+![Arquitetura MVP](./assets/arquitetura-chatbot-produto.png)

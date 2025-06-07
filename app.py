@@ -1,16 +1,44 @@
 import os
 import uuid
 import requests
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, session as session_data
 from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
 import re
+from datetime import datetime, timezone
+from collections import defaultdict
+import random
+import logging
+import copy
+import json
+from pydantic import BaseModel, Field
+
 
 load_dotenv()
 
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "dapojNDOUIANIKDAHIODHAKMsdnawuiohqSJ213141SAMjmopdja")
+
+if not app.debug:
+    app.logger.setLevel(logging.INFO)
+else:
+    # Força o logger a mostrar tudo no modo debug
+    app.logger.setLevel(logging.DEBUG)
+    # Garante que o handler do Flask envie logs para o terminal
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        '[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
+    )
+    handler.setFormatter(formatter)
+    if not app.logger.handlers:
+        app.logger.addHandler(handler)
+    else:
+        # Evita handlers duplicados
+        app.logger.handlers.clear()
+        app.logger.addHandler(handler)
 
 try:
     cred = credentials.ApplicationDefault()
@@ -26,6 +54,15 @@ if not GEMINI_API_KEY:
     print("ALERTA: GOOGLE_API_KEY não encontrada.")
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 
+AB_TEST_ENABLED = False
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+OPENROUTER_MODEL_A = "deepseek/deepseek-r1-0528:free"
+OPENROUTER_MODEL_B = "microsoft/phi-4-reasoning:free" 
+if not OPENROUTER_API_KEY:
+    print("ALERTA: OPENROUTER_API_KEY não encontrada nas variáveis de ambiente.")
+
 DEFAULT_PRODUCTS_SEED = [
     {"id": "p1", "name": "NovoPhone X12", "price": "3.499,00", "category": "Smartphone"},
     {"id": "p2", "name": "UltraBook Pro 15", "price": "7.999,00", "category": "Laptop"},
@@ -36,17 +73,6 @@ DEFAULT_PRODUCTS_SEED = [
     {"id": "p7", "name": "VisionScreen 55\" 4K", "price": "3.999,00", "category": "Smart TV"},
     {"id": "p8", "name": "GameBox X", "price": "2.999,00", "category": "Console de Videogame"}
 ]
-
-session_data = {
-    "customer_data": {
-        "name": None, "email": None, "phone": None, 
-        "product_selected_for_cart": None,
-        "cart": []
-    },
-    "chat_state": 'INITIAL',
-    "chat_history_for_llm": [],
-    "last_input_invalid": False
-}
 
 def seed_initial_products():
     if not db:
@@ -101,26 +127,24 @@ def get_base_system_prompt():
                 REGRAS IMPORTANTES:
                 - NÃO adivinhe informações. Peça explicitamente.
                 - Se uma entrada para nome/email/telefone for inválida, peça novamente com gentileza, explicando o formato esperado.
-                - O LINK DE CHECKOUT (falso) DEVE SER ENVIADO SOMENTE NA PROPOSTA FINAL, após todos os dados coletados.
+                - O LINK DE CHECKOUT (falso) DEVE SER ENVIADO SOMENTE NA PROPOSTA FINAL, após todos os dados coletados e deve ter um formato http://marketplace-39A/{{id_fake_da_proposta}}.
                 - Pagamento/garantia: Mencione parcelamento 12x sem juros e garantia estendida disponível se perguntado.
+
+                VOCÊ DEVE RETORNAR A RESPOSTA SEMPRE NESTE FORMATO JSON VÁLIDO:
+                {{
+                    "chat_state": "fase_atual",
+                    "resposta": "Sua resposta amigável e profissional aqui.",
+                    "product_selected_for_cart": {{"nome": "Nome do produto", "preço": "Preço do produto"}},
+                    "cart": [   {{"nome": "Nome do produto", "preço": "Preço do produto"}} ],
+                    "total_value": "Valor total do carrinho em produtos, formatado como float com vírgula",
+                    "customer_data": {{
+                    "name": "Nome do cliente",
+                    "email": "Email do cliente",
+                    "phone": "Telefone do cliente"
+                    }},
+                    "last_input_invalid": false
+                }}
             """
-
-def calculate_total_cart_value(cart):
-    total = 0.0
-    for item in cart:
-        try:
-            price_str = item['price'].replace('.', '').replace(',', '.')
-            total += float(price_str)
-        except ValueError:
-            app.logger.error(f"Erro ao converter preço para o produto: {item['name']}")
-    return total
-
-def format_cart_for_display(cart):
-    if not cart: return "Carrinho vazio."
-    items_str = []
-    for item in cart:
-        items_str.append(f"{item['name']} (R$ {item['price']})")
-    return ", ".join(items_str)
 
 def build_llm_prompt_context_instruction():
     instruction = "INSTRUÇÃO PARA ESTA RESPOSTA ESPECÍFICA: "
@@ -132,51 +156,7 @@ def build_llm_prompt_context_instruction():
 
     if state == 'INITIAL' or state == 'PRODUCT_QUERY':
         instruction += "Saudação inicial ou busca de produtos. Pergunte o que o cliente procura. Se já há itens no carrinho, pode mencioná-los brevemente (ex: 'Seu carrinho atual: [itens]')."
-    elif state == 'AWAITING_PRODUCT_CHOICE':
-        instruction += "Ajude o cliente a escolher um produto específico da lista. Após ele indicar um produto, você deve confirmar o produto e preço, e então perguntar se ele quer adicionar ao carrinho (transitando para AWAITING_ADD_TO_CART_CONFIRMATION)."
-    elif state == 'AWAITING_ADD_TO_CART_CONFIRMATION':
-        if product_selected:
-            instruction += f"O cliente demonstrou interesse no produto: {product_selected['name']} (R$ {product_selected['price']}). PERGUNTE CLARAMENTE se ele deseja adicionar este item ao carrinho. Ex: 'O {product_selected['name']} custa R$ {product_selected['price']}. Gostaria de adicioná-lo ao seu carrinho?' Responda apenas a esta pergunta."
-        else: # Fallback, deveria ter um produto selecionado aqui
-            instruction += "ERRO DE FLUXO: Nenhum produto foi pré-selecionado para adicionar ao carrinho. Volte a ajudar o cliente a escolher um produto."
-            session_data["chat_state"] = 'AWAITING_PRODUCT_CHOICE'
-    elif state == 'PRODUCT_ADDED_ASK_MORE':
-        cart_display = format_cart_for_display(cart_items)
-        instruction += f"O último produto foi adicionado ao carrinho. Carrinho atual: {cart_display}. PERGUNTE se o cliente deseja adicionar mais itens ou finalizar a compra. Ex: 'Adicionei ao carrinho! Agora temos: {cart_display}. Deseja procurar mais algum item ou podemos finalizar sua compra?'"
-    elif state == 'AWAITING_NAME':
-        if not cart_items: # Segurança: não deve chegar aqui sem itens no carrinho
-            instruction += "ERRO DE FLUXO: O cliente decidiu finalizar, mas o carrinho está vazio. Confirme se ele gostaria de adicionar itens antes de prosseguir."
-            session_data["chat_state"] = 'PRODUCT_ADDED_ASK_MORE' # Ou AWAITING_PRODUCT_CHOICE
-        elif last_input_invalid:
-            instruction += f"A entrada para nome não foi válida (precisa de nome e sobrenome, mais de 3 letras, primeira maiúscula). Peça NOVAMENTE o nome completo. Ex: 'Para a proposta, preciso do seu nome completo, por favor. Como consta no seu documento?'"
-        else:
-            instruction += f"O cliente decidiu finalizar a compra com os itens: {format_cart_for_display(cart_items)}. Agora, peça o NOME COMPLETO. Ex: 'Ótimo! Para gerar sua proposta, qual seu nome completo?'"
-    elif state == 'AWAITING_EMAIL':
-        if last_input_invalid:
-            instruction += f"O e-mail fornecido não pareceu válido. Peça NOVAMENTE um e-mail válido para {customer.get('name', 'cliente')}. Ex: 'Por favor, informe um e-mail no formato nome@exemplo.com.'"
-        else:
-            instruction += f"Nome: {customer.get('name', 'Cliente')}. Agora peça o E-MAIL. Ex: 'Obrigado, {customer.get('name', 'Cliente')}. Qual seu e-mail para contato?'"
-    elif state == 'AWAITING_PHONE':
-        if last_input_invalid:
-            instruction += f"O telefone fornecido não pareceu válido (precisa de 10 ou 11 dígitos com DDD). Peça NOVAMENTE o telefone para {customer.get('name', 'cliente')}. Ex: 'Por favor, informe seu telefone com DDD, como (XX) XXXXX-XXXX.'"
-        else:
-            instruction += f"E-mail: {customer.get('email', '[email]')}. Agora peça o TELEFONE (com DDD). Ex: 'Perfeito. E qual seu telefone com DDD?'"
-    elif state == 'PROPOSAL_READY':
-        if all(customer.get(k) for k in ['name', 'email', 'phone']) and cart_items:
-            cart_display = format_cart_for_display(cart_items)
-            total_value = calculate_total_cart_value(cart_items)
-            fake_link = f"https://marketplace.exemplo/finalizar_pedido/{str(uuid.uuid4())[:8]}"
-            instruction += f"TODOS os dados coletados: Nome: {customer['name']}, Email: {customer['email']}, Telefone: {customer['phone']}. Carrinho: {cart_display}. Total: R$ {total_value:.2f}. Gere a PROPOSTA FINAL AMIGÁVEL, recapitulando os itens, o total, e OBRIGATORIAMENTE inclua o LINK FALSO para checkout: {fake_link}. Ex: 'Excelente, {customer['name']}! Sua proposta está pronta. Itens: {cart_display}. Valor Total: R$ {total_value:.2f}. Para finalizar, acesse: {fake_link}. Obrigado!'"
-        else: 
-            instruction += "ERRO DE FLUXO: Dados faltando para proposta. Verifique e peça o que falta."
-            # Lógica de fallback para o estado correto
-            if not cart_items: session_data["chat_state"] = 'AWAITING_PRODUCT_CHOICE'
-            elif not customer.get('name'): session_data["chat_state"] = 'AWAITING_NAME'
-            elif not customer.get('email'): session_data["chat_state"] = 'AWAITING_EMAIL'
-            elif not customer.get('phone'): session_data["chat_state"] = 'AWAITING_PHONE'
-    elif state == 'FINALIZED':
-        instruction += "Proposta enviada. Agradeça e se coloque à disposição. Não inicie nova venda."
-    else: # Fallback genérico
+    else:
         instruction += "Responda ao usuário, considerando o estado atual da conversa."
     
     session_data["last_input_invalid"] = False
@@ -204,80 +184,193 @@ def call_gemini_api(prompt_history):
         app.logger.error(f"Erro API Gemini: {e}")
         return "Ops! Problema com nossa IA. Tente novamente."
 
-def find_product_in_text(text, consider_selected_product=False):
-    if not text: return None
-    lower_text = text.lower()
-    products_list = load_products_from_firestore()
-    if not products_list: return None
+def call_openrouter_api(system_prompt, chat_history):
+    if not OPENROUTER_API_KEY:
+        app.logger.error("API Key do OpenRouter não configurada.")
+        return "ERRO INTERNO: A configuração da IA está ausente."
 
-    if consider_selected_product and session_data["customer_data"].get("product_selected_for_cart"):
-        selected = session_data["customer_data"]["product_selected_for_cart"]
-        if selected["name"].lower() in lower_text:
-            return selected
+    ab_group = session_data.get("ab_test_group")
+    if AB_TEST_ENABLED and ab_group == 'B':
+        model_to_use = OPENROUTER_MODEL_B
+        app.logger.info(f"Sessão no grupo B. Usando modelo: {model_to_use}")
+    else:
+        model_to_use = OPENROUTER_MODEL_A
+        app.logger.info(f"Sessão no grupo A. Usando modelo: {model_to_use}")
 
-    for product in products_list:
-        if product["name"].lower() in lower_text:
-            return product
-        product_name_parts = product["name"].lower().split()
-        if len(product_name_parts) > 1 and all(part in lower_text for part in product_name_parts):
-            return product
-    return None
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:5001", 
+        "X-Title": "Marketplace Chatbot"
+    }
 
-def process_llm_response_and_input(llm_response_text, user_input):
-    state = session_data["chat_state"]
-    customer = session_data["customer_data"]
-    lower_user_input = user_input.lower()
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(chat_history)
 
-    if state == 'AWAITING_PRODUCT_CHOICE':
-        product = find_product_in_text(user_input)
-        if product:
-            customer["product_selected_for_cart"] = product
-            session_data["chat_state"] = 'AWAITING_ADD_TO_CART_CONFIRMATION'
-            app.logger.info(f"Produto '{product['name']}' identificado para carrinho. Novo estado: AWAITING_ADD_TO_CART_CONFIRMATION")
-            return
-    
-    elif state == 'AWAITING_ADD_TO_CART_CONFIRMATION':
-        product_to_add = customer.get("product_selected_for_cart")
-        if product_to_add:
-            if any(kw in lower_user_input for kw in ['sim', 'quero', 'pode', 'adicione', 'claro', 'ok', 'gostaria']):
-                customer["cart"].append(product_to_add)
-                app.logger.info(f"Produto '{product_to_add['name']}' ADICIONADO ao carrinho. Carrinho: {len(customer['cart'])} itens.")
-                customer["product_selected_for_cart"] = None
-                session_data["chat_state"] = 'PRODUCT_ADDED_ASK_MORE'
-            elif any(kw in lower_user_input for kw in ['não', 'nao', 'agora não', 'depois', 'cancelar']):
-                app.logger.info(f"Usuário NÃO quis adicionar '{product_to_add['name']}' ao carrinho.")
-                customer["product_selected_for_cart"] = None
-                session_data["chat_state"] = 'AWAITING_PRODUCT_CHOICE'
-    
-    elif state == 'PRODUCT_ADDED_ASK_MORE':
-        if any(kw in lower_user_input for kw in ['finalizar', 'fechar', 'concluir', 'checkout', 'pagar', 'só isso']):
-            if customer["cart"]:
-                session_data["chat_state"] = 'AWAITING_NAME'
-                app.logger.info("Usuário decidiu FINALIZAR COMPRA. Novo estado: AWAITING_NAME.")
-            else: 
-                app.logger.info("Usuário quer finalizar, mas carrinho vazio. Voltando para escolha de produto.")
-                session_data["chat_state"] = 'AWAITING_PRODUCT_CHOICE'
-        elif any(kw in lower_user_input for kw in ['mais itens', 'continuar', 'outro', 'ver mais', 'adicionar mais']):
-            session_data["chat_state"] = 'AWAITING_PRODUCT_CHOICE'
-            app.logger.info("Usuário quer ADICIONAR MAIS ITENS. Novo estado: AWAITING_PRODUCT_CHOICE.")
+    payload = {
+        "model": model_to_use,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 600
+    }
+
+    try:
+        response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get("choices") and result["choices"][0].get("message") and result["choices"][0]["message"].get("content"):
+            return result["choices"][0]["message"]["content"].strip()
+        else:
+            app.logger.error(f"Resposta da API OpenRouter inesperada: {result}")
+            return "Desculpe, não consegui processar a sua solicitação (resposta da IA foi inesperada)."
+    except requests.exceptions.RequestException as e:
+        app.logger.error(f"Erro de comunicação com a API OpenRouter: {e}")
+        if e.response is not None:
+            app.logger.error(f"Detalhes do erro da API: {e.response.text}")
+        return "Ops! Tive um problema de comunicação com nossa IA. Poderia tentar novamente?"
+    except Exception as e:
+        app.logger.error(f"Erro inesperado ao chamar a API OpenRouter: {e}")
+        return "Desculpe, ocorreu um erro interno ao tentar processar sua solicitação."
+
+def save_session_to_firestore(session_data):
+    """Salva o estado final da sessão atual no Firestore."""
+    if not db or not session_data.get("session_uuid"):
+        return
+
+    try:
+        session_uuid = session_data["session_uuid"]
+        ab_group = session_data.get("ab_test_group")
         
-    elif state == 'PROPOSAL_READY':
-         if "proposta comercial está pronta" in llm_response_text.lower() or \
-           "proposta para o" in llm_response_text.lower() or \
-           "marketplace.exemplo/finalizar_pedido" in llm_response_text.lower():
-            session_data["chat_state"] = 'FINALIZED'
-            app.logger.info("Proposta gerada pelo LLM. Novo estado: FINALIZED.")
+        if AB_TEST_ENABLED and ab_group == 'B':
+            model_used = OPENROUTER_MODEL_B
+        elif AB_TEST_ENABLED:
+            model_used = OPENROUTER_MODEL_A
+        else:
+            model_used = "Gemini-2.0-flash"  # Modelo padrão se A/B não estiver ativo
+        
 
+        data_to_save = {
+            "session_uuid": session_uuid,
+            "final_state": session_data["chat_state"],
+            "model_used": model_used,
+            "timestamp_utc": datetime.now(timezone.utc),
+            "cart_items": len(session_data["customer_data"]["cart"]),
+            "total_value": session_data["total_value"]
+        }
+
+        sessions_ref = db.collection('sessions')
+        sessions_ref.document(session_uuid).set(data_to_save)
+        app.logger.info(f"Sessão {session_uuid} salva no Firestore.")
+
+    except Exception as e:
+        app.logger.error(f"Erro ao salvar sessão {session_data.get('session_uuid')} no Firestore: {e}")
 
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/dash')
+def dashboard():
+    """Renderiza a página HTML do dashboard."""
+    return render_template('dashboard.html')
+
+@app.route('/list_models')
+def list_models():
+    """Busca e retorna uma lista de nomes de modelos únicos da coleção de sessões."""
+    if not db:
+        return jsonify({"error": "Firestore não está disponível"}), 500
+    try:
+        sessions_ref = db.collection('sessions').select(['model_used']).stream()
+        unique_models = set(session.get('model_used') for session in sessions_ref if session.get('model_used'))
+        return jsonify(sorted(list(unique_models)))
+    except Exception as e:
+        app.logger.error(f"Erro ao listar modelos: {e}")
+        return jsonify({"error": "Falha ao buscar lista de modelos"}), 500
+
+
+@app.route('/dashboard_data')
+def dashboard_data():
+    """Fornece os dados processados para os gráficos do dashboard, com filtro opcional por modelo."""
+    if not db:
+        return jsonify({"error": "Firestore não está disponível"}), 500
+
+    try:
+        selected_model = request.args.get('model')
+        
+        query = db.collection('sessions')
+        if selected_model:
+            app.logger.info(f"Filtrando dados do dashboard para o modelo: {selected_model}")
+            query = query.where('model_used', '==', selected_model)
+        
+        sessions = [doc.to_dict() for doc in query.stream()]
+
+        # Processamento para o gráfico de barras
+        states_by_model = defaultdict(lambda: defaultdict(int))
+        all_states = set()
+        model_labels = set()
+
+        for session in sessions:
+            model = session.get('model_used', 'Desconhecido')
+            state = session.get('final_state', 'UNKNOWN')
+            states_by_model[model][state] += 1
+            all_states.add(state)
+            model_labels.add(model)
+        
+        sorted_states = sorted(list(all_states))
+        bar_chart_datasets = []
+        for model_label in sorted(list(model_labels)):
+            bar_chart_datasets.append({
+                "label": model_label,
+                "data": [states_by_model[model_label].get(state, 0) for state in sorted_states]
+            })
+
+        bar_chart_data = {"labels": sorted_states, "datasets": bar_chart_datasets}
+
+
+        # Processamento para o gráfico de série temporal
+        time_series_by_model = defaultdict(lambda: defaultdict(lambda: {'total': 0, 'finalized': 0}))
+        for session in sessions:
+            model = session.get('model_used', 'Desconhecido')
+            timestamp = session.get('timestamp_utc')
+            if not isinstance(timestamp, datetime): continue 
+
+            date_str = timestamp.strftime('%Y-%m-%d')
+            time_series_by_model[model][date_str]['total'] += 1
+            if session.get('final_state') == 'proposta_final':
+                time_series_by_model[model][date_str]['finalized'] += 1
+        
+        time_series_datasets = []
+        for model_label, date_data in time_series_by_model.items():
+            dataset = {"label": model_label, "data": []}
+            for date_str in sorted(date_data.keys()):
+                daily_data = date_data[date_str]
+                rate = (daily_data['finalized'] / daily_data['total'] * 100) if daily_data['total'] > 0 else 0
+                dataset["data"].append({"x": date_str, "y": round(rate, 2)})
+            time_series_datasets.append(dataset)
+        
+        time_series_data = {"datasets": time_series_datasets}
+
+        return jsonify({
+            "bar_chart_data": bar_chart_data,
+            "time_series_data": time_series_data
+        })
+
+    except Exception as e:
+        app.logger.error(f"Erro ao buscar dados do dashboard: {e}")
+        return jsonify({"error": "Falha ao processar dados do dashboard"}), 500
 
 @app.route('/initialize_chat', methods=['POST'])
 def initialize_chat():
     if not db:
         return jsonify({"bot_response": "ERRO: Banco de dados indisponível.", "chat_state": "ERROR"}), 500
     
+    if session_data.get("session_uuid") and not session_data.get("session_saved"):
+        session_to_save = copy.deepcopy(session_data) # Cria uma cópia profunda para garantir a integridade dos dados
+        app.logger.info(f"Salvando sessão anterior abandonada: {session_to_save['session_uuid']}")
+        save_session_to_firestore(session_to_save)
+    
+    session_data.clear()
     session_data["customer_data"] = {
         "name": None, "email": None, "phone": None, 
         "product_selected_for_cart": None, 
@@ -286,6 +379,17 @@ def initialize_chat():
     session_data["chat_state"] = 'PRODUCT_QUERY' 
     session_data["chat_history_for_llm"] = []
     session_data["last_input_invalid"] = False
+    session_data["session_uuid"] = str(uuid.uuid4())
+    session_data["session_saved"] = False
+    session_data["total_value"] = 0.0
+
+
+    if AB_TEST_ENABLED:
+        session_data["ab_test_group"] = random.choice(['A', 'B'])
+        app.logger.info(f"Nova sessão iniciada. Teste A/B ativo. Grupo atribuído: {session_data['ab_test_group']}")
+    else:
+        session_data["ab_test_group"] = 'A' # Padrão para grupo A se o teste estiver desativado
+        app.logger.info("Nova sessão iniciada. Teste A/B inativo. Usando modelo padrão do grupo A.")
 
     initial_greeting = "Olá! Bem-vindo ao Marketplace. Sou 39A-na, sua assistente virtual. O que você está procurando hoje?"
     session_data["chat_history_for_llm"].append({"role": "model", "parts": [{"text": initial_greeting}]})
@@ -311,8 +415,6 @@ def send_message():
     current_state_before_llm = session_data["chat_state"]
     customer = session_data["customer_data"]
 
-    process_llm_response_and_input(None, user_input) 
-
     if current_state_before_llm == 'AWAITING_NAME':
         words = user_input.split()
         if len(user_input) > 3 and len(words) >= 2 and words[0][0].isupper() and all(word[0].isalpha() or word[0].isdigit()==False for word in words if len(word)>0): # Verifica se todas as palavras começam com letra
@@ -334,7 +436,6 @@ def send_message():
             session_data["chat_state"] = 'PROPOSAL_READY'
         else:
             session_data["last_input_invalid"] = True
-    
     llm_payload_history = []
     system_prompt = get_base_system_prompt()
     context_instruction = build_llm_prompt_context_instruction()
@@ -343,13 +444,35 @@ def send_message():
     llm_payload_history.append({"role": "model", "parts": [{"text": "Entendido."}]})
     llm_payload_history.extend(session_data["chat_history_for_llm"])
 
-    bot_response_text = call_gemini_api(llm_payload_history)
+    if AB_TEST_ENABLED:
+        bot_response = call_openrouter_api(system_prompt, session_data["chat_history_for_llm"])
+    else:
+        bot_response = call_gemini_api(llm_payload_history)
+    bot_response_text = bot_response
+    match = re.search(r'\{.*\}', bot_response, re.DOTALL)
+    try:
+        bot_response = json.loads(bot_response)
+    except json.JSONDecodeError:
+        match = re.search(r'\{.*\}', bot_response, re.DOTALL)
+        if match:
+            clean_json_str = match.group(0)
+            bot_response = json.loads(clean_json_str)
+    if not isinstance(bot_response, dict):
+        bot_response_text = bot_response
+    else:
+        bot_response_text = bot_response["resposta"] if isinstance(bot_response, dict) else bot_response
+        session_data["chat_state"] = bot_response["chat_state"] if isinstance(bot_response, dict) else session_data["chat_state"]
+        session_data["customer_data"]["product_selected_for_cart"] = bot_response.get("product_selected_for_cart", None)
+        session_data["customer_data"]["cart"] = bot_response.get("cart", [])
+        session_data["last_input_invalid"] = bot_response.get("last_input_invalid", False)
+        session_data["total_value"] = bot_response.get("total_value", 0.0)
     session_data["chat_history_for_llm"].append({"role": "model", "parts": [{"text": bot_response_text}]})
+
+    if isinstance(bot_response_text, str) and re.search(r'https?://', bot_response_text):
+        session_data["chat_state"] = "proposta_final"
     
-    if not session_data["last_input_invalid"]:
-         process_llm_response_and_input(bot_response_text, user_input)
-
-
+    app.logger.info(session_data)
+    save_session_to_firestore(session_data)
     return jsonify({"bot_response": bot_response_text, "chat_state": session_data["chat_state"]})
 
 if __name__ == '__main__':
@@ -358,4 +481,5 @@ if __name__ == '__main__':
     else:
         with app.app_context(): 
             seed_initial_products()
+    
     app.run(debug=True, port=5001)

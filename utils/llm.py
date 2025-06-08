@@ -30,7 +30,7 @@ def get_base_system_prompt(db):
                 REGRAS IMPORTANTES:
                 - NÃO adivinhe informações. Peça explicitamente.
                 - Se uma entrada para nome/email/telefone for inválida, peça novamente com gentileza, explicando o formato esperado.
-                - O LINK DE CHECKOUT (falso) DEVE SER ENVIADO SOMENTE NA PROPOSTA FINAL, após todos os dados coletados e deve ter um formato http://marketplace-39A/{{id_fake_da_proposta}}.
+                - O LINK DE CHECKOUT (falso) DEVE SER ENVIADO SOMENTE NA PROPOSTA FINAL, após todos os dados coletados e deve ter um formato https://marketplace-39A.com.br/{{id_falso_da_proposta}}.
                 - Pagamento/garantia: Mencione parcelamento 12x sem juros e garantia estendida disponível se perguntado.
 
                 VOCÊ DEVE RETORNAR A RESPOSTA SEMPRE NESTE FORMATO JSON VÁLIDO:
@@ -53,7 +53,7 @@ def build_llm_prompt_context_instruction(session_data):
     instruction = "INSTRUÇÃO PARA ESTA RESPOSTA ESPECÍFICA: "
     state = session_data["chat_state"]
 
-    if state == 'INITIAL' or state == 'PRODUCT_QUERY':
+    if state == 'inicial' or state == 'ajuda_na_escolha':
         instruction += "Saudação inicial ou busca de produtos. Pergunte o que o cliente procura. Se já há itens no carrinho, pode mencioná-los brevemente (ex: 'Seu carrinho atual: [itens]')."
     else:
         instruction += "Responda ao usuário, considerando o estado atual da conversa."

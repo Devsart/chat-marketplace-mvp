@@ -166,7 +166,7 @@
         
         async function handleUserSendMessage() {
             const userInput = messageInput.value.trim();
-            if (userInput === "" || currentChatState === 'FINALIZED') return;
+            if (userInput === "" || currentChatState === 'proposta_final' || userInput.length > 255) return;
 
             addMessageToDisplay(userInput, 'user');
             messageInput.value = "";
@@ -195,7 +195,7 @@
                 addMessageToDisplay("Erro de conexão. Tente novamente.", 'bot');
             } finally {
                 showLoading(false);
-                if (currentChatState === 'FINALIZED') {
+                if (currentChatState === 'proposta_final') {
                     messageInput.placeholder = "Conversa finalizada. Reinicie para continuar.";
                     messageInput.disabled = true;
                     sendButton.disabled = true;
@@ -209,7 +209,7 @@
             messageInput.placeholder = "Digite sua mensagem...";
             messageInput.disabled = false;
             sendButton.disabled = false;
-            currentChatState = 'INITIAL'; 
+            currentChatState = 'inicial'; 
 
             try {
                 const response = await fetch('/initialize_chat', { method: 'POST' });

@@ -149,10 +149,10 @@ def initialize_chat():
         session_data["ab_test_group"] = random.choice(['A', 'B'])
         logging.info(f"Nova sessão iniciada. Teste A/B ativo. Grupo atribuído: {session_data['ab_test_group']}")
     else:
-        session_data["ab_test_group"] = 'A' # Padrão para grupo A se o teste estiver desativado
+        session_data["ab_test_group"] = 'A' 
         logging.info("Nova sessão iniciada. Teste A/B inativo. Usando modelo padrão do grupo A.")
 
-    initial_greeting = "Olá! Bem-vindo ao Marketplace. Sou 39A-na, sua assistente virtual. O que você está procurando hoje?"
+    initial_greeting = "Olá! Bem-vindo ao Marketplace de Eletrônicos. Sou 39A-na, sua assistente virtual. O que você está procurando hoje?"
     session_data["chat_history_for_llm"].append({"role": "model", "parts": [{"text": initial_greeting}]})
     return jsonify({"bot_response": initial_greeting, "chat_state": session_data["chat_state"]})
 
